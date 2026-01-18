@@ -12,6 +12,7 @@ import {
 } from "@x402/core/types";
 import { toFacilitatorEvmSigner } from "@x402/evm";
 import { registerExactEvmScheme } from "@x402/evm/exact/facilitator";
+import { supabase } from './supabase.js';
 
 dotenv.config();
 
@@ -99,6 +100,94 @@ registerExactEvmScheme(facilitator, {
 const app = express();
 app.use(express.json());
 
+// Debug endpoint to check incoming payloads (optional, you can remove later)
+app.post("/settle", async (req, res) => {
+  try {
+    const { paymentPayload, paymentRequirements } = req.body;
+
+    // DEBUG: Log full incoming objects to see real field names
+    console.log('=== DEBUG: paymentPayload ===', JSON.stringify(paymentPayload, null, 2));
+    console.log('=== DEBUG: paymentRequirements ===', JSON.stringify(paymentRequirements, null, 2));
+
+    if (!paymentPayload || !paymentRequirements) {
+      return res.status(400).json({
+        error: "Missing paymentPayload or paymentRequirements",
+      });
+    }
+
+    const response: SettleResponse = await facilitator.settle(
+      paymentPayload as PaymentPayload,
+      paymentRequirements as PaymentRequirements,
+    );
+
+    // ───────────────────────────────────────────────────────────────
+    // Log transaction to Supabase after successful settlement
+    // ───────────────────────────────────────────────────────────────
+    try {
+      // Adjust field names based on actual DEBUG logs you will see in Render
+      const payerWallet = paymentPayload.payer || paymentPayload.sender || 'unknown';
+      const amountStr = paymentRequirements.amount || paymentRequirements.value || '0';
+      const amount = parseFloat(amountStr);
+      const endpointPath = paymentRequirements.resource || paymentRequirements.path || '/unknown';
+      const network = paymentPayload.network || 'base-sepolia';
+      const txHash = response.transactionHash || response.hash || '0xmock';
+
+      const { data: endpoint, error: findError } = await supabase
+        .from('endpoints')
+        .select('id, user_id')
+        .eq('path', endpointPath)
+        .eq('network', network)
+        .maybeSingle();
+
+      if (findError) {
+        console.error('Error finding endpoint:', findError);
+      } else if (endpoint) {
+        const { error: insertError } = await supabase
+          .from('transactions')
+          .insert({
+            user_id: endpoint.user_id,
+            endpoint_id: endpoint.id,
+            payer_wallet: payerWallet,
+            amount,
+            net_amount: amount, // subtract fee later if needed
+            tx_hash: txHash,
+            chain: network,
+            status: 'success',
+            created_at: new Date().toISOString()
+          });
+
+        if (insertError) {
+          console.error('Error logging transaction to Supabase:', insertError);
+        } else {
+          console.log(`Transaction logged successfully for user_id: ${endpoint.user_id}`);
+        }
+      } else {
+        console.warn(`Endpoint not found for path: ${endpointPath} and network: ${network}`);
+      }
+    } catch (logError) {
+      console.error('Error during Supabase logging:', logError);
+    }
+    // ───────────────────────────────────────────────────────────────
+
+    res.json(response);
+  } catch (error) {
+    console.error("Settle error:", error);
+    if (
+      error instanceof Error &&
+      error.message.includes("Settlement aborted:")
+    ) {
+      return res.json({
+        success: false,
+        errorReason: error.message.replace("Settlement aborted: ", ""),
+        network: req.body?.paymentPayload?.network || "unknown",
+      } as SettleResponse);
+    }
+    res.status(500).json({
+      error: error instanceof Error ? error.message : "Unknown error",
+    });
+  }
+});
+
 app.post("/verify", async (req, res) => {
   try {
     const { paymentPayload, paymentRequirements } = req.body as {
@@ -117,37 +206,6 @@ app.post("/verify", async (req, res) => {
     res.json(response);
   } catch (error) {
     console.error("Verify error:", error);
-    res.status(500).json({
-      error: error instanceof Error ? error.message : "Unknown error",
-    });
-  }
-});
-
-app.post("/settle", async (req, res) => {
-  try {
-    const { paymentPayload, paymentRequirements } = req.body;
-    if (!paymentPayload || !paymentRequirements) {
-      return res.status(400).json({
-        error: "Missing paymentPayload or paymentRequirements",
-      });
-    }
-    const response: SettleResponse = await facilitator.settle(
-      paymentPayload as PaymentPayload,
-      paymentRequirements as PaymentRequirements,
-    );
-    res.json(response);
-  } catch (error) {
-    console.error("Settle error:", error);
-    if (
-      error instanceof Error &&
-      error.message.includes("Settlement aborted:")
-    ) {
-      return res.json({
-        success: false,
-        errorReason: error.message.replace("Settlement aborted: ", ""),
-        network: req.body?.paymentPayload?.network || "unknown",
-      } as SettleResponse);
-    }
     res.status(500).json({
       error: error instanceof Error ? error.message : "Unknown error",
     });
