@@ -124,49 +124,55 @@ app.post("/settle", async (req, res) => {
     // Log transaction to Supabase after successful settlement
     // ───────────────────────────────────────────────────────────────
     try {
-      // Adjust field names based on actual DEBUG logs you will see in Render
-      const payerWallet = paymentPayload.payer || paymentPayload.sender || 'unknown';
-      const amountStr = paymentRequirements.amount || paymentRequirements.value || '0';
-      const amount = parseFloat(amountStr);
-      const endpointPath = paymentRequirements.resource || paymentRequirements.path || '/unknown';
-      const network = paymentPayload.network || 'base-sepolia';
-      const txHash = response.transactionHash || response.hash || '0xmock';
+      // DEBUG: Log full incoming objects to see real field names
+      console.log('=== DEBUG: paymentPayload ===', JSON.stringify(paymentPayload, null, 2));
+      console.log('=== DEBUG: paymentRequirements ===', JSON.stringify(paymentRequirements, null, 2));
 
-      const { data: endpoint, error: findError } = await supabase
-        .from('endpoints')
-        .select('id, user_id')
-        .eq('path', endpointPath)
-        .eq('network', network)
-        .maybeSingle();
+    // Extract fields – adjust these based on DEBUG logs later
+    const payerWallet = paymentPayload.payer || paymentPayload.sender || 'unknown';
+    const amountStr = paymentRequirements.amount || paymentRequirements.value || '0';
+    const amount = parseFloat(amountStr);
+    const endpointPath = paymentRequirements.resource || paymentRequirements.path || '/unknown';
+    const network = paymentPayload.network || 'base-sepolia';
 
-      if (findError) {
-        console.error('Error finding endpoint:', findError);
-      } else if (endpoint) {
-        const { error: insertError } = await supabase
-          .from('transactions')
-          .insert({
-            user_id: endpoint.user_id,
-            endpoint_id: endpoint.id,
-            payer_wallet: payerWallet,
-            amount,
-            net_amount: amount, // subtract fee later if needed
-            tx_hash: txHash,
-            chain: network,
-            status: 'success',
-            created_at: new Date().toISOString()
-          });
+    // txHash – we don't have it in SettleResponse yet, use placeholder for now
+    const txHash = 'pending-' + Date.now();  // temporary placeholder
 
-        if (insertError) {
-          console.error('Error logging transaction to Supabase:', insertError);
-        } else {
-          console.log(`Transaction logged successfully for user_id: ${endpoint.user_id}`);
-        }
+    const { data: endpoint, error: findError } = await supabase
+      .from('endpoints')
+      .select('id, user_id')
+      .eq('path', endpointPath)
+      .eq('network', network)
+      .maybeSingle();
+
+    if (findError) {
+      console.error('Error finding endpoint:', findError);
+    } else if (endpoint) {
+      const { error: insertError } = await supabase
+        .from('transactions')
+        .insert({
+          user_id: endpoint.user_id,
+          endpoint_id: endpoint.id,
+          payer_wallet: payerWallet,
+          amount,
+          net_amount: amount, // subtract fee later if needed
+          tx_hash: txHash,    // placeholder – we'll fix when we have real hash
+          chain: network,
+          status: 'success',
+          created_at: new Date().toISOString()
+        });
+
+      if (insertError) {
+        console.error('Error logging transaction to Supabase:', insertError);
       } else {
-        console.warn(`Endpoint not found for path: ${endpointPath} and network: ${network}`);
+        console.log(`Transaction logged successfully for user_id: ${endpoint.user_id}`);
       }
-    } catch (logError) {
-      console.error('Error during Supabase logging:', logError);
+    } else {
+      console.warn(`Endpoint not found for path: ${endpointPath} and network: ${network}`);
     }
+  } catch (logError) {
+    console.error('Error during Supabase logging:', logError);
+  }
     // ───────────────────────────────────────────────────────────────
 
     res.json(response);
